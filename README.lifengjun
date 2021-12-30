@@ -1,0 +1,27 @@
+Running script:
+CUDA_VISIBLE_DEVICES=0,1,2,3 python train.py --outdir=./training-runs --cfg=stylegan2 --data=/amax/lifengjun/data/CelebA/celeba-256 \
+    --gpus=4 --batch=32 --gamma=10 --mirror=1 --aug=noaug
+
+
+Where inception net located:
+print metrics.metrics_utils line(212) to see what cache_file locate and place inception
+celeba-256-inception-2015-12-05-ffb9d0015966329eb22af5f5ab80afee.pkl to /home/amax/.cache/dnnlib/gan-metrics/
+18d9c1159d16cd4cc6adf7db0f2dd2a9_inception-2015-12-05.pkl to /home/amax/.cache/dnnlib/downloads/
+
+
+Result:
+1. 10.249.47.32
+/data/lifengjun/stylegan3/training-runs/00018-stylegan2-celeba-256-gpus4-batch32-gamma10/
+gan-loss: info-loss=0.002:0.002(one-hot only)
+
+2. 10.249.40.111
+/amax/lifengjun/stylegan3/training-runs/00007-stylegan2-celeba-256-gpus4-batch32-gamma10/
+gan-loss: info-loss=0.002:0.003(one-hot only)
+
+3. 10.249.47.32
+/data/lifengjun/stylegan3/training-runs/00019-stylegan2-celeba-256-gpus4-batch32-gamma10/
+gan-loss: info-loss=0.002:0.0024(one-hot only)
+
+4. 10.249.40.111
+/amax/lifengjun/stylegan3/training-runs/00021-stylegan2-celeba-256-gpus4-batch32-gamma10/
+gan-loss: info-loss=0.002:0.0024(cls_dim=10, con_dim=2) cls=>categorical code con=>continuous code

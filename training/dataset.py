@@ -33,19 +33,19 @@ class Dataset(torch.utils.data.Dataset):
         random_seed = 0,        # Random seed to use when applying max_size.
     ):
         self._name = name
-        self._raw_shape = list(raw_shape)
+        self._raw_shape = list(raw_shape)  # self._raw_shape => [# of img, c, h, w]
         self._use_labels = use_labels
         self._raw_labels = None
         self._label_shape = None
 
         # Apply max_size.
-        self._raw_idx = np.arange(self._raw_shape[0], dtype=np.int64)
+        self._raw_idx = np.arange(self._raw_shape[0], dtype=np.int64)  # self._raw_idx => [0, 1, 2, ..., 29999]
         if (max_size is not None) and (self._raw_idx.size > max_size):
             np.random.RandomState(random_seed).shuffle(self._raw_idx)
             self._raw_idx = np.sort(self._raw_idx[:max_size])
 
         # Apply xflip.
-        self._xflip = np.zeros(self._raw_idx.size, dtype=np.uint8)
+        self._xflip = np.zeros(self._raw_idx.size, dtype=np.uint8)  # self._xflip => [0, 0, ..., 0]
         if xflip:
             self._raw_idx = np.tile(self._raw_idx, 2)
             self._xflip = np.concatenate([self._xflip, np.ones_like(self._xflip)])
@@ -164,6 +164,7 @@ class ImageFolderDataset(Dataset):
 
         if os.path.isdir(self._path):
             self._type = 'dir'
+            # comment: get all file from directory and sub-directory
             self._all_fnames = {os.path.relpath(os.path.join(root, fname), start=self._path) for root, _dirs, files in os.walk(self._path) for fname in files}
         elif self._file_ext(self._path) == '.zip':
             self._type = 'zip'
@@ -172,12 +173,13 @@ class ImageFolderDataset(Dataset):
             raise IOError('Path must point to a directory or zip')
 
         PIL.Image.init()
+        # comment: Filtering the file whose extension is a picture form.
         self._image_fnames = sorted(fname for fname in self._all_fnames if self._file_ext(fname) in PIL.Image.EXTENSION)
         if len(self._image_fnames) == 0:
             raise IOError('No image files found in the specified path')
 
         name = os.path.splitext(os.path.basename(self._path))[0]
-        raw_shape = [len(self._image_fnames)] + list(self._load_raw_image(0).shape)
+        raw_shape = [len(self._image_fnames)] + list(self._load_raw_image(0).shape)  # raw_shape => [# of img, c, h, w]
         if resolution is not None and (raw_shape[2] != resolution or raw_shape[3] != resolution):
             raise IOError('Image files do not match the specified resolution')
         super().__init__(name=name, raw_shape=raw_shape, **super_kwargs)

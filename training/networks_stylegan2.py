@@ -60,7 +60,7 @@ def modulated_conv2d(
         w = weight.unsqueeze(0) # [NOIkk]
         w = w * styles.reshape(batch_size, 1, -1, 1, 1) # [NOIkk]
     if demodulate:
-        dcoefs = (w.square().sum(dim=[2,3,4]) + 1e-8).rsqrt() # [NO]
+        dcoefs = (w.square().sum(dim=[2, 3, 4]) + 1e-8).rsqrt() # [NO]
     if demodulate and fused_modconv:
         w = w * dcoefs.reshape(batch_size, -1, 1, 1, 1) # [NOIkk]
 
@@ -562,7 +562,7 @@ class DiscriminatorBlock(torch.nn.Module):
         first_layer_idx,                    # Index of the first layer.
         architecture        = 'resnet',     # Architecture: 'orig', 'skip', 'resnet'.
         activation          = 'lrelu',      # Activation function: 'relu', 'lrelu', etc.
-        resample_filter     = [1,3,3,1],    # Low-pass filter to apply when resampling activations.
+        resample_filter     = [1, 3, 3, 1], # Low-pass filter to apply when resampling activations.
         conv_clamp          = None,         # Clamp the output of convolution layers to +-X, None = disable clamping.
         use_fp16            = False,        # Use FP16 for this block?
         fp16_channels_last  = False,        # Use channels-last memory format with FP16?
@@ -658,7 +658,7 @@ class MinibatchStdLayer(torch.nn.Module):
         y = y - y.mean(dim=0)               # [GnFcHW] Subtract mean over group.
         y = y.square().mean(dim=0)          # [nFcHW]  Calc variance over group.
         y = (y + 1e-8).sqrt()               # [nFcHW]  Calc stddev over group.
-        y = y.mean(dim=[2,3,4])             # [nF]     Take average over channels and pixels.
+        y = y.mean(dim=[2, 3, 4])           # [nF]     Take average over channels and pixels.
         y = y.reshape(-1, F, 1, 1)          # [nF11]   Add missing dimensions.
         y = y.repeat(G, 1, H, W)            # [NFHW]   Replicate over group and pixels.
         x = torch.cat([x, y], dim=1)        # [NCHW]   Append to input as new channels.
@@ -672,16 +672,18 @@ class MinibatchStdLayer(torch.nn.Module):
 @persistence.persistent_class
 class DiscriminatorEpilogue(torch.nn.Module):
     def __init__(self,
-        in_channels,                    # Number of input channels.
-        cmap_dim,                       # Dimensionality of mapped conditioning label, 0 = no label.
-        resolution,                     # Resolution of this block.
-        img_channels,                   # Number of input color channels.
-        architecture        = 'resnet', # Architecture: 'orig', 'skip', 'resnet'.
-        mbstd_group_size    = 4,        # Group size for the minibatch standard deviation layer, None = entire minibatch.
-        mbstd_num_channels  = 1,        # Number of features for the minibatch standard deviation layer, 0 = disable.
-        activation          = 'lrelu',  # Activation function: 'relu', 'lrelu', etc.
-        conv_clamp          = None,     # Clamp the output of convolution layers to +-X, None = disable clamping.
-    ):
+                 in_channels,  # Number of input channels.
+                 cmap_dim,  # Dimensionality of mapped conditioning label, 0 = no label.
+                 resolution,  # Resolution of this block.
+                 img_channels,  # Number of input color channels.
+                 architecture        = 'resnet',  # Architecture: 'orig', 'skip', 'resnet'.
+                 mbstd_group_size    = 4,  # Group size for the minibatch standard deviation layer, None = entire minibatch.
+                 mbstd_num_channels  = 1,  # Number of features for the minibatch standard deviation layer, 0 = disable.
+                 activation          = 'lrelu',  # Activation function: 'relu', 'lrelu', etc.
+                 conv_clamp          = None,  # Clamp the output of convolution layers to +-X, None = disable clamping.
+                 cls_dim            = 10,  # Add by Lifengjun, Dimensionality of categorical label, 0 = no label
+                 con_dim            = 2  # Add by Lifengjun, Dimensionality of continuous label, 0 = no label
+                 ):
         assert architecture in ['orig', 'skip', 'resnet']
         super().__init__()
         self.in_channels = in_channels
@@ -690,11 +692,19 @@ class DiscriminatorEpilogue(torch.nn.Module):
         self.img_channels = img_channels
         self.architecture = architecture
 
+        # Add by Lifengjun
+        self.cls_dim = cls_dim
+        self.con_dim = con_dim
+
         if architecture == 'skip':
             self.fromrgb = Conv2dLayer(img_channels, in_channels, kernel_size=1, activation=activation)
         self.mbstd = MinibatchStdLayer(group_size=mbstd_group_size, num_channels=mbstd_num_channels) if mbstd_num_channels > 0 else None
         self.conv = Conv2dLayer(in_channels + mbstd_num_channels, in_channels, kernel_size=3, activation=activation, conv_clamp=conv_clamp)
         self.fc = FullyConnectedLayer(in_channels * (resolution ** 2), in_channels, activation=activation)
+
+        # Add by Lifengjun: info-GAN
+        self.cls_info = FullyConnectedLayer(in_channels, self.cls_dim)
+        self.con_info = FullyConnectedLayer(in_channels, self.con_dim)
         self.out = FullyConnectedLayer(in_channels, 1 if cmap_dim == 0 else cmap_dim)
 
     def forward(self, x, img, cmap, force_fp32=False):
@@ -715,15 +725,21 @@ class DiscriminatorEpilogue(torch.nn.Module):
             x = self.mbstd(x)
         x = self.conv(x)
         x = self.fc(x.flatten(1))
-        x = self.out(x)
 
+        # Add by Lifengjun: Info GAN
+        cls_info = self.cls_info(x)
+        con_info = self.con_info(x)
+
+        x = self.out(x)
         # Conditioning.
         if self.cmap_dim > 0:
             misc.assert_shape(cmap, [None, self.cmap_dim])
             x = (x * cmap).sum(dim=1, keepdim=True) * (1 / np.sqrt(self.cmap_dim))
 
         assert x.dtype == dtype
-        return x
+
+        # Add by Lifengjun: Info GAN
+        return x, cls_info, con_info
 
     def extra_repr(self):
         return f'resolution={self.resolution:d}, architecture={self.architecture:s}'
@@ -733,25 +749,33 @@ class DiscriminatorEpilogue(torch.nn.Module):
 @persistence.persistent_class
 class Discriminator(torch.nn.Module):
     def __init__(self,
-        c_dim,                          # Conditioning label (C) dimensionality.
-        img_resolution,                 # Input resolution.
-        img_channels,                   # Number of input color channels.
-        architecture        = 'resnet', # Architecture: 'orig', 'skip', 'resnet'.
-        channel_base        = 32768,    # Overall multiplier for the number of channels.
-        channel_max         = 512,      # Maximum number of channels in any layer.
-        num_fp16_res        = 4,        # Use FP16 for the N highest resolutions.
-        conv_clamp          = 256,      # Clamp the output of convolution layers to +-X, None = disable clamping.
-        cmap_dim            = None,     # Dimensionality of mapped conditioning label, None = default.
-        block_kwargs        = {},       # Arguments for DiscriminatorBlock.
-        mapping_kwargs      = {},       # Arguments for MappingNetwork.
-        epilogue_kwargs     = {},       # Arguments for DiscriminatorEpilogue.
-    ):
+                 c_dim,  # Conditioning label (C) dimensionality.
+                 img_resolution,  # Input resolution.
+                 img_channels,  # Number of input color channels.
+                 architecture        = 'resnet',  # Architecture: 'orig', 'skip', 'resnet'.
+                 channel_base        = 32768,  # Overall multiplier for the number of channels.
+                 channel_max         = 512,  # Maximum number of channels in any layer.
+                 num_fp16_res        = 4,  # Use FP16 for the N highest resolutions.
+                 conv_clamp          = 256,  # Clamp the output of convolution layers to +-X, None = disable clamping.
+                 cmap_dim            = None,  # Dimensionality of mapped conditioning label, None = default.
+                 block_kwargs        = {},  # Arguments for DiscriminatorBlock.
+                 mapping_kwargs      = {},  # Arguments for MappingNetwork.
+                 epilogue_kwargs     = {},  # Arguments for DiscriminatorEpilogue.
+                 cls_dim            = 10,  # Add by Lifengjun, Dimensionality of categorical label, 0 = no label
+                 con_dim            = 2  # Add by Lifengjun, Dimensionality of continuous label, 0 = no label
+                 ):
+
         super().__init__()
         self.c_dim = c_dim
         self.img_resolution = img_resolution
         self.img_resolution_log2 = int(np.log2(img_resolution))
         self.img_channels = img_channels
         self.block_resolutions = [2 ** i for i in range(self.img_resolution_log2, 2, -1)]
+
+        # Add by Lifengjun
+        self.cls_dim = cls_dim
+        self.con_dim = con_dim
+
         channels_dict = {res: min(channel_base // res, channel_max) for res in self.block_resolutions + [4]}
         fp16_resolution = max(2 ** (self.img_resolution_log2 + 1 - num_fp16_res), 8)
 
@@ -773,7 +797,8 @@ class Discriminator(torch.nn.Module):
             cur_layer_idx += block.num_layers
         if c_dim > 0:
             self.mapping = MappingNetwork(z_dim=0, c_dim=c_dim, w_dim=cmap_dim, num_ws=None, w_avg_beta=None, **mapping_kwargs)
-        self.b4 = DiscriminatorEpilogue(channels_dict[4], cmap_dim=cmap_dim, resolution=4, **epilogue_kwargs, **common_kwargs)
+        self.b4 = DiscriminatorEpilogue(channels_dict[4], cmap_dim=cmap_dim, resolution=4, cls_dim=cls_dim,
+                                        con_dim=con_dim, **epilogue_kwargs, **common_kwargs)
 
     def forward(self, img, c, update_emas=False, **block_kwargs):
         _ = update_emas # unused
@@ -785,8 +810,8 @@ class Discriminator(torch.nn.Module):
         cmap = None
         if self.c_dim > 0:
             cmap = self.mapping(None, c)
-        x = self.b4(x, img, cmap)
-        return x
+        x, cls_info, con_info = self.b4(x, img, cmap)
+        return x, cls_info, con_info
 
     def extra_repr(self):
         return f'c_dim={self.c_dim:d}, img_resolution={self.img_resolution:d}, img_channels={self.img_channels:d}'

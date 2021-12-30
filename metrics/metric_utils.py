@@ -213,6 +213,7 @@ def compute_feature_stats_for_dataset(opts, detector_url, detector_kwargs, rel_l
             flag = torch.as_tensor(flag, dtype=torch.float32, device=opts.device)
             torch.distributed.broadcast(tensor=flag, src=0)
             flag = (float(flag.cpu()) != 0)
+        print(cache_file, f"flag = {flag}")
 
         # Load.
         if flag:

@@ -10,6 +10,7 @@ import re
 import contextlib
 import numpy as np
 import torch
+import torch.nn.functional as F
 import warnings
 import dnnlib
 
@@ -264,3 +265,28 @@ def print_module_summary(module, inputs, max_nesting=3, skip_redundant=True):
     return outputs
 
 #----------------------------------------------------------------------------
+# generate one-hot code. Add by Lifengjun
+
+def random_one_hot(batch_size, cls_dim, device, grid_size=None):
+    if grid_size is None:
+        categorical_labels = torch.randint(cls_dim, (batch_size,))
+    else:
+        assert grid_size[1] == cls_dim
+        categorical_labels = torch.tensor([[i] * grid_size[0] for i in range(grid_size[1])]).flatten(0)
+    one_hot_labels = F.one_hot(categorical_labels, cls_dim).to(device)
+    return one_hot_labels
+
+#----------------------------------------------------------------------------
+# generate continuous label
+
+def random_continuous_label(batch_size, con_dim, device, grid_size=None):
+    if grid_size is None:
+        continuous_label = torch.tensor(np.random.uniform(-1, 1, (batch_size, con_dim)), device=device)
+    else:
+        grid_num = grid_size[0] * grid_size[1]
+        zeros = np.zeros((grid_num, 1))
+        linspace = np.repeat(np.linspace(-1, 1, grid_size[0])[:, np.newaxis], grid_size[1], 0)
+        c1 = torch.tensor(np.concatenate((linspace, zeros), -1))
+        c2 = torch.tensor(np.concatenate((zeros, linspace), -1))
+        continuous_label = [c1.to(device), c2.to(device)]
+    return continuous_label

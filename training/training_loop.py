@@ -22,6 +22,7 @@ from torch_utils import misc
 from torch_utils import training_stats
 from torch_utils.ops import conv2d_gradfix
 from torch_utils.ops import grid_sample_gradfix
+import itertools
 
 import legacy
 from metrics import metric_main
@@ -31,7 +32,9 @@ from metrics import metric_main
 def setup_snapshot_image_grid(training_set, random_seed=0):
     rnd = np.random.RandomState(random_seed)
     gw = np.clip(7680 // training_set.image_shape[2], 7, 32)
-    gh = np.clip(4320 // training_set.image_shape[1], 4, 32)
+    # Modified by Lifengjun
+    gh = np.clip(2560 // training_set.image_shape[1], 4, 32)
+    # gh = np.clip(4320 // training_set.image_shape[1], 4, 32)
 
     # No labels => show random subset of training samples.
     if not training_set.has_labels:
@@ -93,6 +96,7 @@ def training_loop(
     data_loader_kwargs      = {},       # Options for torch.utils.data.DataLoader.
     G_kwargs                = {},       # Options for generator network.
     D_kwargs                = {},       # Options for discriminator network.
+    info_opt_kwargs         = {},       # Options for info-Loss. Add by Lifengjun
     G_opt_kwargs            = {},       # Options for generator optimizer.
     D_opt_kwargs            = {},       # Options for discriminator optimizer.
     augment_kwargs          = None,     # Options for augmentation pipeline. None = disable.
@@ -132,6 +136,8 @@ def training_loop(
     conv2d_gradfix.enabled = True                       # Improves training speed.
     grid_sample_gradfix.enabled = True                  # Avoids errors with the augmentation pipe.
 
+    print(rank)
+
     # Load training set.
     if rank == 0:
         print('Loading training set...')
@@ -151,7 +157,7 @@ def training_loop(
     common_kwargs = dict(c_dim=training_set.label_dim, img_resolution=training_set.resolution, img_channels=training_set.num_channels)
     G = dnnlib.util.construct_class_by_name(**G_kwargs, **common_kwargs).train().requires_grad_(False).to(device) # subclass of torch.nn.Module
     D = dnnlib.util.construct_class_by_name(**D_kwargs, **common_kwargs).train().requires_grad_(False).to(device) # subclass of torch.nn.Module
-    G_ema = copy.deepcopy(G).eval()
+    G_ema = copy.deepcopy(G).eval()  # G_ema => represents a moving average of the generator weights over several training steps.
 
     # Resume from existing pickle.
     if (resume_pkl is not None) and (rank == 0):
@@ -190,20 +196,26 @@ def training_loop(
     # Setup training phases.
     if rank == 0:
         print('Setting up training phases...')
-    loss = dnnlib.util.construct_class_by_name(device=device, G=G, D=D, augment_pipe=augment_pipe, **loss_kwargs) # subclass of training.loss.Loss
+    loss = dnnlib.util.construct_class_by_name(device=device, G=G, D=D, augment_pipe=augment_pipe, **loss_kwargs)  # subclass of training.loss.Loss
     phases = []
     for name, module, opt_kwargs, reg_interval in [('G', G, G_opt_kwargs, G_reg_interval), ('D', D, D_opt_kwargs, D_reg_interval)]:
         if reg_interval is None:
-            opt = dnnlib.util.construct_class_by_name(params=module.parameters(), **opt_kwargs) # subclass of torch.optim.Optimizer
+            opt = dnnlib.util.construct_class_by_name(params=module.parameters(), **opt_kwargs)  # subclass of torch.optim.Optimizer
             phases += [dnnlib.EasyDict(name=name+'both', module=module, opt=opt, interval=1)]
-        else: # Lazy regularization.
+        else:  # Lazy regularization.
             mb_ratio = reg_interval / (reg_interval + 1)
             opt_kwargs = dnnlib.EasyDict(opt_kwargs)
             opt_kwargs.lr = opt_kwargs.lr * mb_ratio
             opt_kwargs.betas = [beta ** mb_ratio for beta in opt_kwargs.betas]
-            opt = dnnlib.util.construct_class_by_name(module.parameters(), **opt_kwargs) # subclass of torch.optim.Optimizer
+            opt = dnnlib.util.construct_class_by_name(module.parameters(), **opt_kwargs)  # subclass of torch.optim.Optimizer
             phases += [dnnlib.EasyDict(name=name+'main', module=module, opt=opt, interval=1)]
             phases += [dnnlib.EasyDict(name=name+'reg', module=module, opt=opt, interval=reg_interval)]
+
+    # Add by Lifengjun: Info-GAN, TODO: adjust lr of info-loss
+    info_opt_kwargs.lr = 0.0024
+    info_opt = dnnlib.util.construct_class_by_name(params=itertools.chain(G.parameters(), D.parameters()), **info_opt_kwargs)
+    phases += [dnnlib.EasyDict(name=name+'info', module=torch.nn.ModuleList([G, D]), opt=info_opt, interval=1)]
+
     for phase in phases:
         phase.start_event = None
         phase.end_event = None
@@ -218,11 +230,19 @@ def training_loop(
     if rank == 0:
         print('Exporting sample images...')
         grid_size, images, labels = setup_snapshot_image_grid(training_set=training_set)
-        save_image_grid(images, os.path.join(run_dir, 'reals.png'), drange=[0,255], grid_size=grid_size)
-        grid_z = torch.randn([labels.shape[0], G.z_dim], device=device).split(batch_gpu)
-        grid_c = torch.from_numpy(labels).to(device).split(batch_gpu)
-        images = torch.cat([G_ema(z=z, c=c, noise_mode='const').cpu() for z, c in zip(grid_z, grid_c)]).numpy()
-        save_image_grid(images, os.path.join(run_dir, 'fakes_init.png'), drange=[-1,1], grid_size=grid_size)
+        save_image_grid(images, os.path.join(run_dir, 'reals.png'), drange=[0, 255], grid_size=grid_size)
+        # Change by Lifengjun
+        gw, gh = grid_size
+        grid_cls = misc.random_one_hot(labels.shape[0], cls_dim=D.cls_dim, device=device, grid_size=grid_size)
+        grid_con = misc.random_continuous_label(labels.shape[0], con_dim=D.con_dim, device=device, grid_size=grid_size)
+        for i, con in enumerate(grid_con):
+            grid_z = torch.randn([gw, G.z_dim], device=device)
+            grid_z = grid_z.repeat(gh, 1)
+            grid_z[:, :D.cls_dim+D.con_dim] = torch.cat([grid_cls, con], dim=1)
+            grid_z_in = grid_z.split(batch_gpu)
+            grid_c_in = torch.from_numpy(labels).to(device).split(batch_gpu)
+            images = torch.cat([G_ema(z=z, c=c, noise_mode='const').cpu() for z, c in zip(grid_z_in, grid_c_in)]).numpy()
+            save_image_grid(images, os.path.join(run_dir, f'fakes_init_con{i}.png'), drange=[-1, 1], grid_size=grid_size)
 
     # Initialize logs.
     if rank == 0:
@@ -252,13 +272,15 @@ def training_loop(
     if progress_fn is not None:
         progress_fn(0, total_kimg)
     while True:
-
         # Fetch training data.
         with torch.autograd.profiler.record_function('data_fetch'):
             phase_real_img, phase_real_c = next(training_set_iterator)
             phase_real_img = (phase_real_img.to(device).to(torch.float32) / 127.5 - 1).split(batch_gpu)
             phase_real_c = phase_real_c.to(device).split(batch_gpu)
             all_gen_z = torch.randn([len(phases) * batch_size, G.z_dim], device=device)
+            all_gen_cls = misc.random_one_hot(all_gen_z.shape[0], cls_dim=D.cls_dim, device=device)
+            all_gen_con = misc.random_continuous_label(all_gen_z.shape[0], con_dim=D.con_dim, device=device)
+            all_gen_z[:, :D.cls_dim + D.con_dim] = torch.cat([all_gen_cls, all_gen_con], dim=1)
             all_gen_z = [phase_gen_z.split(batch_gpu) for phase_gen_z in all_gen_z.split(batch_size)]
             all_gen_c = [training_set.get_label(np.random.randint(len(training_set))) for _ in range(len(phases) * batch_size)]
             all_gen_c = torch.from_numpy(np.stack(all_gen_c)).pin_memory().to(device)
@@ -350,8 +372,14 @@ def training_loop(
 
         # Save image snapshot.
         if (rank == 0) and (image_snapshot_ticks is not None) and (done or cur_tick % image_snapshot_ticks == 0):
-            images = torch.cat([G_ema(z=z, c=c, noise_mode='const').cpu() for z, c in zip(grid_z, grid_c)]).numpy()
-            save_image_grid(images, os.path.join(run_dir, f'fakes{cur_nimg//1000:06d}.png'), drange=[-1,1], grid_size=grid_size)
+            for i, con in enumerate(grid_con):
+                grid_z = torch.randn([gw, G.z_dim], device=device)
+                grid_z = grid_z.repeat(gh, 1)
+                grid_z[:, :D.cls_dim + D.con_dim] = torch.cat([grid_cls, con], dim=1)
+                grid_z = grid_z.split(batch_gpu)
+                grid_c = torch.from_numpy(labels).to(device).split(batch_gpu)
+                images = torch.cat([G_ema(z=z, c=c, noise_mode='const').cpu() for z, c in zip(grid_z, grid_c)]).numpy()
+                save_image_grid(images, os.path.join(run_dir, f'fakes{cur_nimg//1000:06d}_con{i}.png'), drange=[-1, 1], grid_size=grid_size)
 
         # Save network snapshot.
         snapshot_pkl = None

@@ -236,8 +236,8 @@ def training_loop(
         grid_cls = misc.random_one_hot(labels.shape[0], cls_dim=D.cls_dim, device=device, grid_size=grid_size)
         grid_con = misc.random_continuous_label(labels.shape[0], con_dim=D.con_dim, device=device, grid_size=grid_size)
         for i, con in enumerate(grid_con):
-            grid_z = torch.randn([gw, G.z_dim], device=device)
-            grid_z = grid_z.repeat(gh, 1)
+            grid_z = torch.randn([1, G.z_dim], device=device)
+            grid_z = grid_z.repeat(gh * gw, 1)
             grid_z[:, :D.cls_dim+D.con_dim] = torch.cat([grid_cls, con], dim=1)
             grid_z_in = grid_z.split(batch_gpu)
             grid_c_in = torch.from_numpy(labels).to(device).split(batch_gpu)
@@ -373,8 +373,8 @@ def training_loop(
         # Save image snapshot.
         if (rank == 0) and (image_snapshot_ticks is not None) and (done or cur_tick % image_snapshot_ticks == 0):
             for i, con in enumerate(grid_con):
-                grid_z = torch.randn([gw, G.z_dim], device=device)
-                grid_z = grid_z.repeat(gh, 1)
+                grid_z = torch.randn([1, G.z_dim], device=device)
+                grid_z = grid_z.repeat(gh * gw, 1)
                 grid_z[:, :D.cls_dim + D.con_dim] = torch.cat([grid_cls, con], dim=1)
                 grid_z = grid_z.split(batch_gpu)
                 grid_c = torch.from_numpy(labels).to(device).split(batch_gpu)

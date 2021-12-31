@@ -10,7 +10,7 @@
 
 import numpy as np
 import torch
-from torch_utils import training_stats
+from torch_utils import training_stats, misc
 from torch_utils.ops import conv2d_gradfix
 from torch_utils.ops import upfirdn2d
 
@@ -43,6 +43,7 @@ class StyleGAN2Loss(Loss):
         self.blur_init_sigma = blur_init_sigma
         self.blur_fade_kimg = blur_fade_kimg
 
+    # Add by Lifengjun: parameter => info
     def run_G(self, z, c, update_emas=False):
         ws = self.G.mapping(z, c, update_emas=update_emas)
         if self.style_mixing_prob > 0:
@@ -51,6 +52,13 @@ class StyleGAN2Loss(Loss):
                 cutoff = torch.where(torch.rand([], device=ws.device) < self.style_mixing_prob, cutoff,
                                      torch.full_like(cutoff, ws.shape[1]))
                 ws[:, cutoff:] = self.G.mapping(torch.randn_like(z), c, update_emas=False)[:, cutoff:]
+
+        # Add by Lifengjun: generate different noise for three layer.
+        for layer in range(self.G.info_layer):
+            cls_info = misc.random_one_hot(z.shape[0], cls_dim=self.G.cls_dim, device=z.device)
+            for j in range(self.G.inject_layer):
+                ws[:, self.G.init_layer + layer * self.G.inject_layer + j, : self.G.cls_dim] = cls_info
+
         img = self.G.synthesis(ws, update_emas=update_emas)
         return img, ws
 
@@ -62,15 +70,25 @@ class StyleGAN2Loss(Loss):
                 img = upfirdn2d.filter2d(img, f / f.sum())
         if self.augment_pipe is not None:
             img = self.augment_pipe(img)
-        logits, _, _ = self.D(img, c, update_emas=update_emas)
+        logits, _, = self.D(img, c, update_emas=update_emas)
         return logits
 
-    # Add by Lifengjun
+    # Add by Lifengjun: function run_info
     def run_info(self, z, c, update_emas=False):
         ws = self.G.mapping(z, c, update_emas=update_emas)
+
+        # Add by Lifengjun: generate different noise for three layer.
+        cls_info_gts = []
+        for layer in range(self.G.info_layer):
+            cls_info = misc.random_one_hot(z.shape[0], cls_dim=self.G.cls_dim, device=z.device)
+            cls_info_gts.append(cls_info)
+            for j in range(self.G.inject_layer):
+                ws[:, self.G.init_layer + layer * self.G.inject_layer + j, : self.G.cls_dim] = cls_info
+
         img = self.G.synthesis(ws, update_emas=update_emas)
-        _, cls_info, con_info = self.D(img, c, update_emas=update_emas)
-        return cls_info, con_info
+        _, cls_info_preds = self.D(img, c, update_emas=update_emas)
+        cls_info_preds.reverse()
+        return cls_info_gts, cls_info_preds
 
     def accumulate_gradients(self, phase, real_img, real_c, gen_z, gen_c, gain, cur_nimg):
         assert phase in ['Gmain', 'Greg', 'Gboth', 'Dmain', 'Dreg', 'Dboth', 'Dinfo']
@@ -158,12 +176,14 @@ class StyleGAN2Loss(Loss):
         # info loss: Add by Lifengjun
         if phase in ['Dinfo']:
             with torch.autograd.profiler.record_function('info_forward'):
-                cls_info, con_info = self.run_info(gen_z, gen_c, update_emas=True)
-                training_stats.report('Loss/D/cls_info', cls_info)
-                training_stats.report('Loss/D/con_info', con_info)
-                one_hot_label = gen_z[:, :self.D.cls_dim]
-                loss_Dinfo = torch.nn.functional.cross_entropy(cls_info, torch.max(one_hot_label, dim=1)[1]) + \
-                        torch.nn.functional.mse_loss(con_info, gen_z[:, self.D.cls_dim:self.D.cls_dim+self.D.con_dim])
+                loss_Dinfo = 0
+                cls_info_gts, cls_info_preds = self.run_info(gen_z, gen_c, update_emas=True)
+                training_stats.report('Loss/D/cls_info_0', cls_info_preds[0])
+                training_stats.report('Loss/D/cls_info_1', cls_info_preds[1])
+                training_stats.report('Loss/D/cls_info_2', cls_info_preds[2])
+                for i in range(self.G.info_layer):
+                    cls_info_gt = cls_info_gts[i][:, :self.D.cls_dim]
+                    loss_Dinfo += torch.nn.functional.cross_entropy(cls_info_preds[i], torch.max(cls_info_gt, dim=1)[1])
             with torch.autograd.profiler.record_function('info_backward'):
                 loss_Dinfo.backward()
 # ----------------------------------------------------------------------------

@@ -17,7 +17,7 @@ import uuid
 import numpy as np
 import torch
 import dnnlib
-
+from torch_utils import misc
 #----------------------------------------------------------------------------
 
 class MetricOptions:
@@ -266,9 +266,12 @@ def compute_feature_stats_for_generator(opts, detector_url, detector_kwargs, rel
         images = []
         for _i in range(batch_size // batch_gen):
             z = torch.randn([batch_gen, G.z_dim], device=opts.device)
-            img = G(z=z, c=next(c_iter), **opts.G_kwargs)
-            img = (img * 127.5 + 128).clamp(0, 255).to(torch.uint8)
-            images.append(img)
+            # Add by Lifengjun.
+            grid_clses = [misc.random_one_hot(z.shape[0], cls_dim=G.cls_dim, device=opts.device) for _ in range(G.info_layer)]  # three layer in total
+            for layer, grid_cls_in in enumerate(grid_clses):
+                img = G(z=z, c=next(c_iter), info=[layer, grid_cls_in], **opts.G_kwargs)
+                img = (img * 127.5 + 128).clamp(0, 255).to(torch.uint8)
+                images.append(img)
         images = torch.cat(images)
         if images.shape[1] == 1:
             images = images.repeat([1, 3, 1, 1])

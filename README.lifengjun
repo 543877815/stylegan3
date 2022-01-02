@@ -25,3 +25,8 @@ gan-loss: info-loss=0.002:0.0024(one-hot only)
 4. 10.249.40.111
 /amax/lifengjun/stylegan3/training-runs/00021(00022)-stylegan2-celeba-256-gpus4-batch32-gamma10/
 gan-loss: info-loss=0.002:0.0024(cls_dim=10, con_dim=2) cls=>categorical code con=>continuous code
+
+5. 10.249.47.32
+/data/lifengjun/stylegan3/training-runs/00020-stylegan2-celeba-256-gpus4-batch32-gamma10/
+add info-loss per layer
+gan-loss: info-loss=0.002:0.0024(cls_dim=10 per layer)

@@ -369,7 +369,7 @@ class SynthesisBlock(torch.nn.Module):
         img_channels,                           # Number of output color channels.
         is_last,                                # Is this the last block?
         architecture            = 'skip',       # Architecture: 'orig', 'skip', 'resnet'.
-        resample_filter         = [1,3,3,1],    # Low-pass filter to apply when resampling activations.
+        resample_filter         = [1, 3, 3, 1], # Low-pass filter to apply when resampling activations.
         conv_clamp              = 256,          # Clamp the output of convolution layers to +-X, None = disable clamping.
         use_fp16                = False,        # Use FP16 for this block?
         fp16_channels_last      = False,        # Use channels-last memory format with FP16?
@@ -529,6 +529,7 @@ class Generator(torch.nn.Module):
         z_dim,                      # Input latent (Z) dimensionality.
         c_dim,                      # Conditioning label (C) dimensionality.
         w_dim,                      # Intermediate latent (W) dimensionality.
+        cls_dim,                    # Add by Lifengjun: categorical dimensionality
         img_resolution,             # Output resolution.
         img_channels,               # Number of output color channels.
         mapping_kwargs      = {},   # Arguments for MappingNetwork.
@@ -538,14 +539,34 @@ class Generator(torch.nn.Module):
         self.z_dim = z_dim
         self.c_dim = c_dim
         self.w_dim = w_dim
+
+        # Add by Lifengjun
+        self.cls_dim = cls_dim
+        self.init_layer = 2
+        self.info_layer = 3
+        self.inject_layer = 4
+
         self.img_resolution = img_resolution
         self.img_channels = img_channels
         self.synthesis = SynthesisNetwork(w_dim=w_dim, img_resolution=img_resolution, img_channels=img_channels, **synthesis_kwargs)
         self.num_ws = self.synthesis.num_ws
         self.mapping = MappingNetwork(z_dim=z_dim, c_dim=c_dim, w_dim=w_dim, num_ws=self.num_ws, **mapping_kwargs)
 
-    def forward(self, z, c, truncation_psi=1, truncation_cutoff=None, update_emas=False, **synthesis_kwargs):
+    # Add by Lifengjun: parameter => one_hots
+    def forward(self, z, c, info, truncation_psi=1, truncation_cutoff=None, update_emas=False, **synthesis_kwargs):
         ws = self.mapping(z, c, truncation_psi=truncation_psi, truncation_cutoff=truncation_cutoff, update_emas=update_emas)
+
+        # Add by Lifengjun: inject one_hot code for [inject_layer] layer after ignoring the first [init_layer] layer.
+        layer, cls_info = info
+        for i in range(self.info_layer):
+            for j in range(self.inject_layer):
+                if i == layer:
+                    ws[:, self.init_layer + layer * self.inject_layer + j, :self.cls_dim] = cls_info
+                else:
+                    fixed_info = misc.random_one_hot(z.shape[0], cls_dim=self.cls_dim, device=z.device, fixed=True)
+                    ws[:, self.init_layer + i * self.inject_layer + j, :self.cls_dim] = fixed_info
+
+
         img = self.synthesis(ws, update_emas=update_emas, **synthesis_kwargs)
         return img
 
@@ -692,19 +713,11 @@ class DiscriminatorEpilogue(torch.nn.Module):
         self.img_channels = img_channels
         self.architecture = architecture
 
-        # Add by Lifengjun
-        self.cls_dim = cls_dim
-        self.con_dim = con_dim
-
         if architecture == 'skip':
             self.fromrgb = Conv2dLayer(img_channels, in_channels, kernel_size=1, activation=activation)
         self.mbstd = MinibatchStdLayer(group_size=mbstd_group_size, num_channels=mbstd_num_channels) if mbstd_num_channels > 0 else None
         self.conv = Conv2dLayer(in_channels + mbstd_num_channels, in_channels, kernel_size=3, activation=activation, conv_clamp=conv_clamp)
         self.fc = FullyConnectedLayer(in_channels * (resolution ** 2), in_channels, activation=activation)
-
-        # Add by Lifengjun: info-GAN
-        self.cls_info = FullyConnectedLayer(in_channels, self.cls_dim)
-        self.con_info = FullyConnectedLayer(in_channels, self.con_dim)
         self.out = FullyConnectedLayer(in_channels, 1 if cmap_dim == 0 else cmap_dim)
 
     def forward(self, x, img, cmap, force_fp32=False):
@@ -725,21 +738,15 @@ class DiscriminatorEpilogue(torch.nn.Module):
             x = self.mbstd(x)
         x = self.conv(x)
         x = self.fc(x.flatten(1))
-
-        # Add by Lifengjun: Info GAN
-        cls_info = self.cls_info(x)
-        con_info = self.con_info(x)
-
         x = self.out(x)
+
         # Conditioning.
         if self.cmap_dim > 0:
             misc.assert_shape(cmap, [None, self.cmap_dim])
             x = (x * cmap).sum(dim=1, keepdim=True) * (1 / np.sqrt(self.cmap_dim))
 
         assert x.dtype == dtype
-
-        # Add by Lifengjun: Info GAN
-        return x, cls_info, con_info
+        return x
 
     def extra_repr(self):
         return f'resolution={self.resolution:d}, architecture={self.architecture:s}'
@@ -800,18 +807,36 @@ class Discriminator(torch.nn.Module):
         self.b4 = DiscriminatorEpilogue(channels_dict[4], cmap_dim=cmap_dim, resolution=4, cls_dim=cls_dim,
                                         con_dim=con_dim, **epilogue_kwargs, **common_kwargs)
 
+        # Add by Lifengjun: for layer info-gan
+        self.info_layer_resolutions = [128, 32, 8]
+        for res in self.info_layer_resolutions:
+            conv = Conv2dLayer(channels_dict[res], 1, kernel_size=3, activation='lrelu')
+            setattr(self, f'info-conv{res}', conv)
+            fc = FullyConnectedLayer(res * res, self.cls_dim, activation='lrelu')
+            setattr(self, f'info-fc{res}', fc)
+
     def forward(self, img, c, update_emas=False, **block_kwargs):
         _ = update_emas # unused
         x = None
+        cls_infos = []
         for res in self.block_resolutions:
+            # Add by Lifengjun: Get info-output
+            if res in self.info_layer_resolutions:
+                conv = getattr(self, f'info-conv{res}')
+                fc = getattr(self, f'info-fc{res}')
+                out = conv(x).view(-1, res * res)
+                cls_info = fc(out)
+                cls_infos.append(cls_info)
+
             block = getattr(self, f'b{res}')
             x, img = block(x, img, **block_kwargs)
+
 
         cmap = None
         if self.c_dim > 0:
             cmap = self.mapping(None, c)
-        x, cls_info, con_info = self.b4(x, img, cmap)
-        return x, cls_info, con_info
+        x = self.b4(x, img, cmap)
+        return x, cls_infos
 
     def extra_repr(self):
         return f'c_dim={self.c_dim:d}, img_resolution={self.img_resolution:d}, img_channels={self.img_channels:d}'

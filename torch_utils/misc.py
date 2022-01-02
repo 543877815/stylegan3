@@ -267,12 +267,15 @@ def print_module_summary(module, inputs, max_nesting=3, skip_redundant=True):
 #----------------------------------------------------------------------------
 # generate one-hot code. Add by Lifengjun
 
-def random_one_hot(batch_size, cls_dim, device, grid_size=None):
-    if grid_size is None:
-        categorical_labels = torch.randint(cls_dim, (batch_size,))
+def random_one_hot(batch_size, cls_dim, device, grid_size=None, fixed=False):
+    if fixed:
+        categorical_labels = torch.zeros(batch_size, dtype=torch.int64)
     else:
-        assert grid_size[1] == cls_dim
-        categorical_labels = torch.tensor([[i] * grid_size[0] for i in range(grid_size[1])]).flatten(0)
+        if grid_size is None:
+            categorical_labels = torch.randint(cls_dim, (batch_size,))
+        else:
+            assert grid_size[1] == cls_dim
+            categorical_labels = torch.tensor([[i] * grid_size[0] for i in range(grid_size[1])]).flatten(0)
     one_hot_labels = F.one_hot(categorical_labels, cls_dim).to(device)
     return one_hot_labels
 

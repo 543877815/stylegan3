@@ -8,6 +8,10 @@ print metrics.metrics_utils line(212) to see what cache_file locate and place in
 celeba-256-inception-2015-12-05-ffb9d0015966329eb22af5f5ab80afee.pkl to /home/amax/.cache/dnnlib/gan-metrics/
 18d9c1159d16cd4cc6adf7db0f2dd2a9_inception-2015-12-05.pkl to /home/amax/.cache/dnnlib/downloads/
 
+branch:
+1. main: support single continuous label and categorical label
+2. layer-info: only support categorical label and the label is injected and predicted in different layers
+3. layer-info1: only support categorical label and teh label is injected in different layers but predicted in the final layer
 
 Result:
 1. 10.249.47.32
@@ -23,5 +27,11 @@ gan-loss: info-loss=0.002:0.003(one-hot only)
 gan-loss: info-loss=0.002:0.0024(one-hot only)
 
 4. 10.249.40.111
-/amax/lifengjun/stylegan3/training-runs/00021-stylegan2-celeba-256-gpus4-batch32-gamma10/
+/amax/lifengjun/stylegan3/training-runs/00021(00022)-stylegan2-celeba-256-gpus4-batch32-gamma10/
 gan-loss: info-loss=0.002:0.0024(cls_dim=10, con_dim=2) cls=>categorical code con=>continuous code
+
+5. 10.249.47.32
+/data/lifengjun/stylegan3/training-runs/00020-stylegan2-celeba-256-gpus4-batch32-gamma10/
+add info-loss per layer
+gan-loss: info-loss=0.002:0.0024(cls_dim=10 per layer)
+

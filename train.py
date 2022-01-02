@@ -206,9 +206,9 @@ def main(**kwargs):
     # Initialize config.
     opts = dnnlib.EasyDict(kwargs)  # Command line arguments.
     c = dnnlib.EasyDict()  # Main config dict.
-    c.G_kwargs = dnnlib.EasyDict(class_name=None, z_dim=512, w_dim=512, mapping_kwargs=dnnlib.EasyDict())
+    c.G_kwargs = dnnlib.EasyDict(class_name=None, z_dim=512, w_dim=512, cls_dim=10, mapping_kwargs=dnnlib.EasyDict())
     c.D_kwargs = dnnlib.EasyDict(class_name='training.networks_stylegan2.Discriminator', cls_dim=10,
-                                 con_dim=2, block_kwargs=dnnlib.EasyDict(), mapping_kwargs=dnnlib.EasyDict(),
+                                 con_dim=0, block_kwargs=dnnlib.EasyDict(), mapping_kwargs=dnnlib.EasyDict(),
                                  epilogue_kwargs=dnnlib.EasyDict())  # Add by Lifengjun
     c.G_opt_kwargs = dnnlib.EasyDict(class_name='torch.optim.Adam', betas=[0, 0.99], eps=1e-8)
     c.D_opt_kwargs = dnnlib.EasyDict(class_name='torch.optim.Adam', betas=[0, 0.99], eps=1e-8)

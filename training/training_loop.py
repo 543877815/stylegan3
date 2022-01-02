@@ -228,7 +228,7 @@ def training_loop(
     grid_size = None
     grid_z = None
     grid_c = None
-    if rank == 0:
+    if rank == 1:
         print('Exporting sample images...')
         grid_size, images, labels = setup_snapshot_image_grid(training_set=training_set)
         save_image_grid(images, os.path.join(run_dir, 'reals.png'), drange=[0, 255], grid_size=grid_size)
@@ -370,7 +370,7 @@ def training_loop(
                 print('Aborting...')
 
         # Save image snapshot.
-        if (rank == 0) and (image_snapshot_ticks is not None) and (done or cur_tick % image_snapshot_ticks == 0):
+        if (rank == 1) and (image_snapshot_ticks is not None) and (done or cur_tick % image_snapshot_ticks == 0):
             for layer, grid_cls_in in enumerate(grid_clses):
                 grid_cls_in = grid_cls_in.split(batch_gpu)
                 images = torch.cat([G_ema(z=z, c=c, info=[layer, cls], noise_mode='const').cpu() for z, c, cls in zip(grid_z_in, grid_c_in, grid_cls_in)]).numpy()

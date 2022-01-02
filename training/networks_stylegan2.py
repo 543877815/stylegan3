@@ -558,8 +558,14 @@ class Generator(torch.nn.Module):
 
         # Add by Lifengjun: inject one_hot code for [inject_layer] layer after ignoring the first [init_layer] layer.
         layer, cls_info = info
-        for j in range(self.inject_layer):
-            ws[:, self.init_layer + layer * self.inject_layer + j, :self.cls_dim] = cls_info
+        for i in range(self.info_layer):
+            for j in range(self.inject_layer):
+                if i == layer:
+                    ws[:, self.init_layer + layer * self.inject_layer + j, :self.cls_dim] = cls_info
+                else:
+                    fixed_info = misc.random_one_hot(z.shape[0], cls_dim=self.cls_dim, device=z.device, fixed=True)
+                    ws[:, self.init_layer + i * self.inject_layer + j, :self.cls_dim] = fixed_info
+
 
         img = self.synthesis(ws, update_emas=update_emas, **synthesis_kwargs)
         return img
